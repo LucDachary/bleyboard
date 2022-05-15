@@ -1,5 +1,6 @@
 use bluer::{
     adv::Advertisement,
+    adv::Type,
     gatt::{
         local::{
             characteristic_control, service_control, Application, Characteristic,
@@ -10,14 +11,18 @@ use bluer::{
     },
 };
 use futures::{future, pin_mut, StreamExt};
+use log::LevelFilter;
 use std::{collections::BTreeMap, time::Duration};
+use syslog::{BasicLogger, Facility, Formatter3164};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     time::{interval, sleep},
 };
 
+// Standard 128 bits UUID: 0000XXXX-0000-1000-8000-00805f9b34fb
+
 /// Human Interface Device (HID) service: 0x1812
-const SERVICE_UUID: uuid::Uuid = uuid::Uuid::from_u128(0xFEEDC0DE1812);
+const SERVICE_UUID: uuid::Uuid = uuid::Uuid::from_u128(0x0000181200001000800000805f9b34fb);
 
 /// Characteristic UUID for GATT example.
 const CHARACTERISTIC_UUID: uuid::Uuid = uuid::Uuid::from_u128(0xF00DC0DE00001);
@@ -31,7 +36,20 @@ const APPEARANCE: u16 = 0x03c1;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> bluer::Result<()> {
-    env_logger::init();
+    let formatter = Formatter3164 {
+        facility: Facility::LOG_USER,
+        hostname: None,
+        // TODO use argv[0]?
+        process: "bleyboard".into(),
+        pid: 0,
+    };
+
+    let logger = syslog::unix(formatter).expect("could not connect to syslog");
+    log::set_boxed_logger(Box::new(BasicLogger::new(logger)))
+        // LDA putting LevelFilter::Trace since bluez/bluer does have trace messages I need.
+        .map(|()| log::set_max_level(LevelFilter::Trace))
+        .unwrap();
+
     let session = bluer::Session::new().await?;
     let adapter = session.default_adapter().await?;
     adapter.set_powered(true).await?;
@@ -44,14 +62,14 @@ async fn main() -> bluer::Result<()> {
     let mut manufacturer_data = BTreeMap::new();
     manufacturer_data.insert(MANUFACTURER_ID, vec![0x21, 0x22, 0x23, 0x24]);
 
-    // TODO set appearance "Keyboard": 0x03C1
     // TODO declare primary service HID
     let le_advertisement = Advertisement {
+        advertisement_type: Type::Peripheral,
         service_uuids: vec![SERVICE_UUID].into_iter().collect(),
         manufacturer_data,
         discoverable: Some(true),
-        // LDA this seems the problem on advertising registration.
-        // appearance: Some(APPEARANCE),
+        // The keyboard appearance seems not to work when SERVICE_UUID is not the standard 0x1812.
+        appearance: Some(APPEARANCE),
         // TODO take the name from a command line argument.
         local_name: Some("Luc's bleyboard".to_string()),
         ..Default::default()
