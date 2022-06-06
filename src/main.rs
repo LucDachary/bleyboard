@@ -9,8 +9,10 @@ use bluer::{
         },
         CharacteristicReader, CharacteristicWriter,
     },
+    ErrorKind,
 };
 use futures::{future, pin_mut, StreamExt};
+use log::error;
 use log::LevelFilter;
 use std::{collections::BTreeMap, time::Duration};
 use syslog::{BasicLogger, Facility, Formatter3164};
@@ -70,12 +72,33 @@ async fn main() -> bluer::Result<()> {
         discoverable: Some(true),
         // The keyboard appearance seems not to work when SERVICE_UUID is not the standard 0x1812.
         appearance: Some(APPEARANCE),
+        // TODO use a commandline argument.
+        timeout: Some(Duration::from_secs(30)),
         // TODO take the name from a command line argument.
         local_name: Some("Luc's bleyboard".to_string()),
         ..Default::default()
     };
+
     println!("{:?}", &le_advertisement);
-    let adv_handle = adapter.advertise(le_advertisement).await?;
+    let adv_handle = match adapter.advertise(le_advertisement).await {
+        Ok(handle) => handle,
+        Err(err) => match err.kind {
+            ErrorKind::InvalidLength => {
+                error!("The advertising data is too long.");
+                return Err(err);
+            }
+            ErrorKind::Failed => {
+                let msg = format!("Advertising failed: {}", err.message);
+                error!("{}", msg);
+                println!("{}", msg);
+                return Err(err);
+            }
+            _ => {
+                error!("Unexpected error: {}", err.message);
+                return Err(err);
+            }
+        },
+    };
 
     println!(
         "Serving GATT service on Bluetooth adapter {}",
