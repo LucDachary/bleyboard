@@ -1,26 +1,23 @@
-use ansi_term::Colour::{Green, Red};
+use ansi_term::Colour::Green;
 use bluer::{
     adv::Advertisement,
     adv::Type,
-    gatt::{
-        local::{
-            characteristic_control, service_control, Application, Characteristic,
-            CharacteristicControlEvent, CharacteristicNotify, CharacteristicNotifyMethod,
-            CharacteristicRead, CharacteristicWrite, CharacteristicWriteMethod, Service,
-        },
-        CharacteristicReader, CharacteristicWriter,
+    gatt::local::{
+        characteristic_control, service_control, Application, Characteristic, CharacteristicNotify,
+        CharacteristicNotifyMethod, CharacteristicRead, CharacteristicWrite,
+        CharacteristicWriteMethod, Service,
     },
     ErrorKind,
 };
-use futures::{future, pin_mut, StreamExt};
+use indicatif::ProgressBar;
 use log::error;
 use log::LevelFilter;
 use log::{debug, info};
 use std::{collections::BTreeMap, time::Duration};
 use syslog::{BasicLogger, Facility, Formatter3164};
 use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
-    time::{interval, sleep},
+    io::{AsyncBufReadExt, BufReader},
+    time::sleep,
 };
 
 // Standard 128 bits UUID: 0000XXXX-0000-1000-8000-00805f9b34fb
@@ -230,76 +227,26 @@ async fn main() -> bluer::Result<()> {
     info!("Service handle is 0x{:x}", service_control.handle()?);
     info!("Characteristic handle is 0x{:x}", char_control.handle()?);
 
-    println!("Service ready. Press enter to quit.");
+    println!("{}", Green.paint("HID Keyboard is ready and advertising."));
+    let scanning_progression = ProgressBar::new_spinner();
+    scanning_progression.enable_steady_tick(Duration::from_millis(100));
+    scanning_progression.set_message(Green.paint("advertising…").to_string());
+
     let stdin = BufReader::new(tokio::io::stdin());
     let mut lines = stdin.lines();
-
-    let mut value: Vec<u8> = vec![0x10, 0x01, 0x01, 0x10];
-    let mut read_buf = Vec::new();
-    let mut reader_opt: Option<CharacteristicReader> = None;
-    let mut writer_opt: Option<CharacteristicWriter> = None;
-    let mut interval = interval(Duration::from_secs(1));
-    pin_mut!(char_control);
 
     loop {
         tokio::select! {
             _ = lines.next_line() => break,
-            evt = char_control.next() => {
-                match evt {
-                    Some(CharacteristicControlEvent::Write(req)) => {
-                        println!("Accepting write event with MTU {}", req.mtu());
-                        read_buf = vec![0; req.mtu()];
-                        reader_opt = Some(req.accept()?);
-                    },
-                    Some(CharacteristicControlEvent::Notify(notifier)) => {
-                        println!("Accepting notify request event with MTU {}", notifier.mtu());
-                        writer_opt = Some(notifier);
-                    },
-                    None => break,
-                }
-            }
-            _ = interval.tick() => {
-                println!("Decrementing each element by one");
-                for v in &mut *value {
-                    *v = v.saturating_sub(1);
-                }
-                println!("Value is {:x?}", &value);
-                if let Some(writer) = writer_opt.as_mut() {
-                    println!("Notifying with value {:x?}", &value);
-                    if let Err(err) = writer.write(&value).await {
-                        println!("Notification stream error: {}", &err);
-                        writer_opt = None;
-                    }
-                }
-            }
-            read_res = async {
-                match &mut reader_opt {
-                    Some(reader) => reader.read(&mut read_buf).await,
-                    None => future::pending().await,
-                }
-            } => {
-                match read_res {
-                    Ok(0) => {
-                        println!("Write stream ended");
-                        reader_opt = None;
-                    }
-                    Ok(n) => {
-                        value = read_buf[0..n].to_vec();
-                        println!("Write request with {} bytes: {:x?}", n, &value);
-                    }
-                    Err(err) => {
-                        println!("Write stream error: {}", Red.paint(format!("{}", &err)));
-                        reader_opt = None;
-                    }
-                }
-            }
         }
     }
+    scanning_progression.finish_and_clear();
 
-    println!("Removing service and advertisement");
+    print!("Removing service and advertisement… ");
     drop(app_handle);
     drop(adv_handle);
     sleep(Duration::from_secs(1)).await;
+    println!("{}", Green.bold().paint("OK"));
 
     Ok(())
 }
