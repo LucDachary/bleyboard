@@ -1,4 +1,5 @@
 use ansi_term::Colour::Green;
+use ansi_term::Style;
 use bluer::{
     adv::Advertisement,
     adv::Type,
@@ -74,6 +75,7 @@ async fn main() -> bluer::Result<()> {
     let mut manufacturer_data = BTreeMap::new();
     // DEV
     manufacturer_data.insert(MANUFACTURER_ID, vec![0x21, 0x22, 0x23, 0x24]);
+    let local_name: &str = "Luc's bleyboard";
     let le_advertisement = Advertisement {
         advertisement_type: Type::Peripheral,
         service_uuids: vec![SERVICE_BATTERY_UUID, SERVICE_HID_UUID]
@@ -87,7 +89,7 @@ async fn main() -> bluer::Result<()> {
         // Maximum is 180 seconds. See §5.1.1.
         timeout: Some(Duration::from_secs(30)),
         // TODO take the name from a command line argument.
-        local_name: Some("Luc's bleyboard".to_string()),
+        local_name: Some(local_name.to_string()),
         ..Default::default()
     };
     debug!("{:?}", &le_advertisement);
@@ -227,10 +229,16 @@ async fn main() -> bluer::Result<()> {
     info!("Service handle is 0x{:x}", service_control.handle()?);
     info!("Characteristic handle is 0x{:x}", char_control.handle()?);
 
-    println!("{}", Green.paint("HID Keyboard is ready and advertising."));
+    println!(
+        "{}",
+        Green.paint("HID Keyboard is ready and advertising. Press Enter to stop.")
+    );
     let scanning_progression = ProgressBar::new_spinner();
     scanning_progression.enable_steady_tick(Duration::from_millis(100));
-    scanning_progression.set_message(Green.paint("advertising…").to_string());
+    scanning_progression.set_message(format!(
+        "{} is advertising",
+        Style::new().underline().paint(local_name)
+    ));
 
     let stdin = BufReader::new(tokio::io::stdin());
     let mut lines = stdin.lines();
