@@ -4,12 +4,14 @@ use bluer::{
     adv::Advertisement,
     adv::Type,
     gatt::local::{
-        characteristic_control, service_control, Application, Characteristic, CharacteristicNotify,
-        CharacteristicNotifyMethod, CharacteristicRead, CharacteristicWrite,
-        CharacteristicWriteMethod, Service,
+        characteristic_control, service_control, Application, Characteristic,
+        CharacteristicControlEvent, CharacteristicNotify, CharacteristicNotifyMethod,
+        CharacteristicRead, CharacteristicWrite, CharacteristicWriteMethod, Service,
     },
+    gatt::{CharacteristicReader, CharacteristicWriter},
     ErrorKind,
 };
+use futures::{future, pin_mut, StreamExt};
 use indicatif::ProgressBar;
 use log::error;
 use log::LevelFilter;
@@ -17,7 +19,7 @@ use log::{debug, info};
 use std::{collections::BTreeMap, time::Duration};
 use syslog::{BasicLogger, Facility, Formatter3164};
 use tokio::{
-    io::{AsyncBufReadExt, BufReader},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     time::sleep,
 };
 
@@ -63,6 +65,7 @@ async fn main() -> bluer::Result<()> {
     println!("{}", Green.bold().paint("OK"));
 
     let session = bluer::Session::new().await?;
+
     let adapter = session.default_adapter().await?;
     adapter.set_powered(true).await?;
 
@@ -76,6 +79,7 @@ async fn main() -> bluer::Result<()> {
     // DEV
     manufacturer_data.insert(MANUFACTURER_ID, vec![0x21, 0x22, 0x23, 0x24]);
     let local_name: &str = "Luc's bleyboard";
+    let adv_timeout = Duration::from_secs(120);
     let le_advertisement = Advertisement {
         advertisement_type: Type::Peripheral,
         service_uuids: vec![SERVICE_BATTERY_UUID, SERVICE_HID_UUID]
@@ -87,7 +91,7 @@ async fn main() -> bluer::Result<()> {
         appearance: Some(APPEARANCE_HID_GAMEPAD),
         // TODO use a commandline argument.
         // Maximum is 180 seconds. See §5.1.1.
-        timeout: Some(Duration::from_secs(30)),
+        timeout: Some(adv_timeout),
         // TODO take the name from a command line argument.
         local_name: Some(local_name.to_string()),
         ..Default::default()
@@ -236,19 +240,84 @@ async fn main() -> bluer::Result<()> {
     let scanning_progression = ProgressBar::new_spinner();
     scanning_progression.enable_steady_tick(Duration::from_millis(100));
     scanning_progression.set_message(format!(
-        "{} is advertising",
-        Style::new().underline().paint(local_name)
+        "{} is advertising for {} second(s)",
+        Style::new().underline().paint(local_name),
+        Style::new()
+            .underline()
+            //            .paint(format!("{}", adv_timeout.as_seconds_f32()))
+            .paint(format!("{}", 120)) // TODO replace with adv_timeout
     ));
 
     let stdin = BufReader::new(tokio::io::stdin());
     let mut lines = stdin.lines();
+    let adv_sleep = sleep(adv_timeout);
+    tokio::pin!(adv_sleep);
+
+    let mut read_buf = Vec::new();
+    let mut reader_opt: Option<CharacteristicReader> = None;
+    let mut writer_opt: Option<CharacteristicWriter> = None;
+    pin_mut!(char_control);
 
     loop {
         tokio::select! {
-            _ = lines.next_line() => break,
+            _ = &mut adv_sleep => {
+                scanning_progression.finish_with_message("Advertisement timed out.");
+                break;
+            }
+            _ = lines.next_line() => {
+                scanning_progression.finish_and_clear();
+                break;
+            }
+            evt = char_control.next() => {
+                // DEV
+                info!("CharacteristicControl got an event: {:?}", evt);
+
+                match evt {
+                    Some(CharacteristicControlEvent::Write(req)) => {
+                        println!("Accepting write request event with MTU {}", req.mtu());
+                        read_buf = vec![0; req.mtu()];
+                        reader_opt = Some(req.accept()?);
+                    },
+                    Some(CharacteristicControlEvent::Notify(notifier)) => {
+                        println!("Accepting notify request event with MTU {}", notifier.mtu());
+                        writer_opt = Some(notifier);
+                    },
+                    None => break,
+                }
+            },
+            read_res = async {
+                match &mut reader_opt {
+                    Some(reader) if writer_opt.is_some() => reader.read(&mut read_buf).await,
+                    _ => future::pending().await,
+                }
+            } => {
+                // DEV
+                println!("Read trial? {:?}", read_res);
+                match read_res {
+                    Ok(0) => {
+                        println!("Read stream ended");
+                        reader_opt = None;
+                    }
+                    Ok(n) => {
+                        let value = read_buf[..n].to_vec();
+                        println!("Echoing {} bytes: {:x?} ... {:x?}", value.len(), &value[0..4.min(value.len())], &value[value.len().saturating_sub(4) ..]);
+                        if value.len() < 512 {
+                            println!("DEV value.len() < 512: {}", value.len());
+                            println!();
+                        }
+                        if let Err(err) = writer_opt.as_mut().unwrap().write_all(&value).await {
+                            println!("Write failed: {}", &err);
+                            writer_opt = None;
+                        }
+                    }
+                    Err(err) => {
+                        println!("Read stream error: {}", &err);
+                        reader_opt = None;
+                    }
+                }
+            }
         }
     }
-    scanning_progression.finish_and_clear();
 
     print!("Removing service and advertisement… ");
     drop(app_handle);
