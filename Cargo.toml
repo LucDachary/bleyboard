@@ -20,3 +20,5 @@ displaydoc = { version = "0.2", optional = true }
 uuid = { version = "1", features = ["v4"] }
 log = "0.4"
 syslog = "5.0.0"
+ansi_term = "0.12.1"
+indicatif = "0.17.1"
